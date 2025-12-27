@@ -1,3 +1,4 @@
+use ash::vk::{self, Handle};
 use conv::{
     from_u64_bits, map_adapter_type, map_backend_type, map_bind_group_entry,
     map_bind_group_layout_entry, map_device_descriptor, map_instance_backend_flags,
@@ -4659,4 +4660,104 @@ pub unsafe extern "C" fn wgpuRenderPassEncoderWriteTimestamp(
             "wgpuRenderPassEncoderWriteTimestamp",
         ),
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wgpuDeviceFromVk(
+    instance: native::WGPUInstance,
+    raw_vk_instance: *const std::ffi::c_void,
+    raw_vk_phys_dev: *const std::ffi::c_void,
+    raw_vk_dev: *const std::ffi::c_void,
+    family_index: u32,
+) -> *const WGPUDeviceImpl {
+    // A lot of inspiration from this:
+    // https://github.com/matthewjberger/wgpu-example/blob/main/src/xr.rs
+
+    // Create WebGPU Vulkan HAL instance.
+
+    let vk_entry = ash::Entry::load().unwrap();
+    let vk_instance = ash::Instance::load(
+        vk_entry.static_fn(),
+        vk::Instance::from_raw(raw_vk_instance as _),
+    );
+
+    let wgpu_vk_instance = <hal::api::Vulkan as hal::Api>::Instance::from_raw(
+        vk_entry.clone(),
+        vk_instance.clone(),
+        0, // TODO
+        0,
+        None,
+        vec![],
+        wgt::InstanceFlags::default(),
+        false,
+        None,
+    )
+    .unwrap();
+
+    // Expose WebGPU Vulkan HAL adapter.
+
+    let vk_phys_dev = vk::PhysicalDevice::from_raw(raw_vk_phys_dev as _);
+    let wgpu_exposed_adapter = wgpu_vk_instance.expose_adapter(vk_phys_dev).unwrap();
+    let wgpu_features = wgpu_exposed_adapter.features;
+
+    let enabled_exts = wgpu_exposed_adapter
+        .adapter
+        .required_device_extensions(wgpu_features);
+
+    // Create WebGPU Vulkan HAL device.
+
+    let vk_dev = ash::Device::load(vk_instance.fp_v1_0(), vk::Device::from_raw(raw_vk_dev as _));
+
+    let wgpu_open_dev = wgpu_exposed_adapter
+        .adapter
+        .device_from_raw(
+            vk_dev,
+            None,
+            &enabled_exts,
+            wgpu_features,
+            &wgt::MemoryHints::default(),
+            family_index,
+            0,
+        )
+        .unwrap();
+
+    // Create WebGPU instance, adapter, and device.
+
+    let mem_hints = wgt::MemoryHints::default();
+
+    let instance = instance.as_ref().expect("invalid instance");
+    let context = Arc::clone(&instance.context);
+
+    let adapter_id = context.create_adapter_from_hal(wgpu_exposed_adapter.into(), None);
+
+    let adapter_limits = context.adapter_limits(adapter_id);
+    let base_limits = get_base_device_limits_from_adapter_limits(&adapter_limits);
+
+    let (dev_id, queue_id) = context
+        .create_device_from_hal(
+            adapter_id,
+            wgpu_open_dev.into(),
+            &wgt::DeviceDescriptor {
+                label: None,
+                required_features: wgpu_features,
+                required_limits: base_limits,
+                memory_hints: mem_hints,
+            },
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    // Create WGPUDeviceImpl to return.
+
+    Arc::into_raw(Arc::new(WGPUDeviceImpl {
+        context: context.clone(),
+        id: dev_id,
+        queue: Arc::new(QueueId {
+            context: context.clone(),
+            id: queue_id,
+        }),
+        error_sink: Arc::new(Mutex::new(ErrorSinkRaw::new(DEFAULT_DEVICE_LOST_HANDLER))),
+    }))
 }
