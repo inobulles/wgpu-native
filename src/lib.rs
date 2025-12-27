@@ -4761,3 +4761,93 @@ pub unsafe extern "C" fn wgpuDeviceFromVk(
         error_sink: Arc::new(Mutex::new(ErrorSinkRaw::new(DEFAULT_DEVICE_LOST_HANDLER))),
     }))
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn wgpuRenderTextureFromVkImage(
+    dev: native::WGPUDevice,
+    raw_vk_image: *const std::ffi::c_void,
+    format: native::WGPUTextureFormat,
+    x_res: u32,
+    y_res: u32,
+) -> native::WGPUTexture {
+    let dev = dev.as_ref().expect("invalid device");
+    let context = &dev.context;
+
+    // Create Vulkan HAL texture.
+
+    let vk_image = vk::Image::from_raw(raw_vk_image as _);
+
+    let size = wgt::Extent3d {
+        width: x_res,
+        height: y_res,
+        depth_or_array_layers: 1,
+    };
+
+    let mip_level_count = 1;
+    let sample_count = 1;
+    let dimension = wgt::TextureDimension::D2;
+    let usage = wgt::TextureUsages::RENDER_ATTACHMENT | wgt::TextureUsages::COPY_DST; // TODO COPY_DST too?
+    let wgpu_format = conv::map_texture_format(format).unwrap();
+
+    let drop_guard = Box::new(|| ()); // TODO Should figure out how we're actually supposed to drop this.
+
+    let hal_texture = <hal::api::Vulkan as hal::Api>::Device::texture_from_raw(
+        vk_image,
+        &hal::TextureDescriptor {
+            label: Some("Texture created from raw VkImage"),
+            size,
+            mip_level_count,
+            sample_count,
+            dimension,
+            format: wgpu_format,
+            usage: hal::TextureUses::COLOR_TARGET | hal::TextureUses::COPY_DST, // TODO COPY_DST too?
+            memory_flags: hal::MemoryFlags::empty(),
+            view_formats: vec![],
+        },
+        Some(drop_guard),
+    );
+
+    // Create WebGPU texture.
+
+    let (tex_id, err) = context.create_texture_from_hal(
+        Box::new(hal_texture),
+        dev.id,
+        &wgt::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count,
+            sample_count,
+            dimension,
+            format: wgpu_format,
+            view_formats: vec![],
+            usage,
+        },
+        None,
+    );
+
+    if let Some(cause) = err {
+        handle_error(&dev.error_sink, cause, None, "wgpuRenderTextureFromVkImage");
+    }
+
+    // Create native WGPUTexture.
+
+    Arc::into_raw(Arc::new(WGPUTextureImpl {
+        context: context.clone(),
+        id: tex_id,
+        error_sink: dev.error_sink.clone(),
+        surface_id: None,
+        has_surface_presented: Arc::default(),
+        data: TextureData {
+            usage: native::WGPUTextureUsage_RenderAttachment,
+            dimension: native::WGPUTextureDimension_2D,
+            size: native::WGPUExtent3D {
+                width: size.width,
+                height: size.height,
+                depthOrArrayLayers: size.depth_or_array_layers,
+            },
+            format,
+            mip_level_count,
+            sample_count,
+        },
+    }))
+}
