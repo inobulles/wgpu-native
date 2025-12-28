@@ -131,6 +131,7 @@ workspace = true
 
 [target.'cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))'.dependencies]
 hal = { workspace = true, features = ["renderdoc"] }
+ash = "0.38.0"
 
 [target.'cfg(windows)'.dependencies]
 hal = { workspace = true, features = ["dx12", "renderdoc"] }
@@ -154,7 +155,6 @@ thiserror = "1"
 parking_lot = "0.12"
 smallvec = "1"
 bitflags = "2"
-ash = "0.38.0"
 
 # This is required to compile but not sure why because we are not targeting JS
 js-sys = "0.3.77"

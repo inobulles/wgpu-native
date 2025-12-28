@@ -1,4 +1,3 @@
-use ash::vk::{self, Handle};
 use conv::{
     from_u64_bits, map_adapter_type, map_backend_type, map_bind_group_entry,
     map_bind_group_layout_entry, map_device_descriptor, map_instance_backend_flags,
@@ -26,6 +25,9 @@ use wgc::{
     command::{bundle_ffi, ComputePass, RenderPass},
     id, resource, Label,
 };
+
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+use ash::vk::{self, Handle};
 
 pub mod conv;
 pub mod logging;
@@ -4662,6 +4664,7 @@ pub unsafe extern "C" fn wgpuRenderPassEncoderWriteTimestamp(
     }
 }
 
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
 #[no_mangle]
 pub unsafe extern "C" fn wgpuDeviceFromVk(
     instance: native::WGPUInstance,
@@ -4762,6 +4765,7 @@ pub unsafe extern "C" fn wgpuDeviceFromVk(
     }))
 }
 
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
 #[no_mangle]
 pub unsafe extern "C" fn wgpuRenderTextureFromVkImage(
     dev: native::WGPUDevice,
