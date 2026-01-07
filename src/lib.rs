@@ -4790,7 +4790,9 @@ pub unsafe extern "C" fn wgpuRenderTextureFromVkImage(
     let mip_level_count = 1;
     let sample_count = 1;
     let dimension = wgt::TextureDimension::D2;
-    let usage = wgt::TextureUsages::RENDER_ATTACHMENT | wgt::TextureUsages::COPY_DST; // TODO COPY_DST too?
+    let usage = wgt::TextureUsages::RENDER_ATTACHMENT
+        | wgt::TextureUsages::COPY_DST
+        | wgt::TextureUsages::TEXTURE_BINDING;
     let wgpu_format = conv::map_texture_format(format).unwrap();
 
     let drop_guard = Box::new(|| ()); // TODO Should figure out how we're actually supposed to drop this.
@@ -4804,7 +4806,7 @@ pub unsafe extern "C" fn wgpuRenderTextureFromVkImage(
             sample_count,
             dimension,
             format: wgpu_format,
-            usage: hal::TextureUses::COLOR_TARGET | hal::TextureUses::COPY_DST, // TODO COPY_DST too?
+            usage: hal::TextureUses::COLOR_TARGET | hal::TextureUses::COPY_DST,
             memory_flags: hal::MemoryFlags::empty(),
             view_formats: vec![],
         },
