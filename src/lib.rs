@@ -4766,10 +4766,31 @@ pub unsafe extern "C" fn wgpuDeviceFromVk(
 }
 
 #[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+fn map_texture_usage_to_hal(flags: native::WGPUTextureUsage) -> hal::TextureUses {
+    // XXX Unfortunately, hal::conv::map_texture_usage is in a private module.
+
+    let mut temp = hal::TextureUses::empty();
+    if (flags & native::WGPUTextureUsage_CopySrc) != 0 {
+        temp.insert(hal::TextureUses::COPY_SRC);
+    }
+    if (flags & native::WGPUTextureUsage_CopyDst) != 0 {
+        temp.insert(hal::TextureUses::COPY_DST);
+    }
+    if (flags & native::WGPUTextureUsage_TextureBinding) != 0 {
+        temp.insert(hal::TextureUses::RESOURCE);
+    }
+    if (flags & native::WGPUTextureUsage_RenderAttachment) != 0 {
+        temp.insert(hal::TextureUses::COLOR_TARGET);
+    }
+    temp
+}
+
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
 #[no_mangle]
 pub unsafe extern "C" fn wgpuTextureFromVkImage(
     dev: native::WGPUDevice,
     raw_vk_image: *const std::ffi::c_void,
+    native_usage: native::WGPUTextureUsage,
     format: native::WGPUTextureFormat,
     x_res: u32,
     y_res: u32,
@@ -4790,9 +4811,7 @@ pub unsafe extern "C" fn wgpuTextureFromVkImage(
     let mip_level_count = 1;
     let sample_count = 1;
     let dimension = wgt::TextureDimension::D2;
-    let usage = wgt::TextureUsages::RENDER_ATTACHMENT
-        | wgt::TextureUsages::COPY_DST
-        | wgt::TextureUsages::TEXTURE_BINDING;
+    let usage = conv::map_texture_usage_flags(native_usage);
     let wgpu_format = conv::map_texture_format(format).unwrap();
 
     let drop_guard = Box::new(|| ()); // TODO Should figure out how we're actually supposed to drop this.
@@ -4806,7 +4825,7 @@ pub unsafe extern "C" fn wgpuTextureFromVkImage(
             sample_count,
             dimension,
             format: wgpu_format,
-            usage: hal::TextureUses::COLOR_TARGET | hal::TextureUses::COPY_DST,
+            usage: map_texture_usage_to_hal(native_usage),
             memory_flags: hal::MemoryFlags::empty(),
             view_formats: vec![],
         },
@@ -4844,7 +4863,7 @@ pub unsafe extern "C" fn wgpuTextureFromVkImage(
         surface_id: None,
         has_surface_presented: Arc::default(),
         data: TextureData {
-            usage: native::WGPUTextureUsage_RenderAttachment,
+            usage: native_usage,
             dimension: native::WGPUTextureDimension_2D,
             size: native::WGPUExtent3D {
                 width: size.width,
