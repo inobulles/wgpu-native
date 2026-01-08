@@ -4767,7 +4767,7 @@ pub unsafe extern "C" fn wgpuDeviceFromVk(
 
 #[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
 #[no_mangle]
-pub unsafe extern "C" fn wgpuRenderTextureFromVkImage(
+pub unsafe extern "C" fn wgpuTextureFromVkImage(
     dev: native::WGPUDevice,
     raw_vk_image: *const std::ffi::c_void,
     format: native::WGPUTextureFormat,
