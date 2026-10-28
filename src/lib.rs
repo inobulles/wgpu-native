@@ -4795,8 +4795,10 @@ pub unsafe extern "C" fn wgpuTextureFromVkImage(
     x_res: u32,
     y_res: u32,
 ) -> native::WGPUTexture {
-    let dev = dev.as_ref().expect("invalid device");
-    let context = &dev.context;
+    let (dev_id, context, error_sink) = {
+        let dev = dev.as_ref().expect("invalid device");
+        (dev.id, &dev.context, &dev.error_sink)
+    };
 
     // Create Vulkan HAL texture.
 
@@ -4836,7 +4838,7 @@ pub unsafe extern "C" fn wgpuTextureFromVkImage(
 
     let (tex_id, err) = context.create_texture_from_hal(
         Box::new(hal_texture),
-        dev.id,
+        dev_id,
         &wgt::TextureDescriptor {
             label: None,
             size,
@@ -4848,10 +4850,15 @@ pub unsafe extern "C" fn wgpuTextureFromVkImage(
             usage,
         },
         None,
+        if (native_usage & native::WGPUTextureUsage_TextureBinding) != 0 {
+            hal::TextureUses::RESOURCE
+        } else {
+            hal::TextureUses::UNINITIALIZED
+        },
     );
 
     if let Some(cause) = err {
-        handle_error(&dev.error_sink, cause, None, "wgpuRenderTextureFromVkImage");
+        handle_error(error_sink, cause, None, "wgpuRenderTextureFromVkImage");
     }
 
     // Create native WGPUTexture.
@@ -4859,7 +4866,7 @@ pub unsafe extern "C" fn wgpuTextureFromVkImage(
     Arc::into_raw(Arc::new(WGPUTextureImpl {
         context: context.clone(),
         id: tex_id,
-        error_sink: dev.error_sink.clone(),
+        error_sink: error_sink.clone(),
         surface_id: None,
         has_surface_presented: Arc::default(),
         data: TextureData {
@@ -4874,5 +4881,45 @@ pub unsafe extern "C" fn wgpuTextureFromVkImage(
             mip_level_count,
             sample_count,
         },
+    }))
+}
+
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+#[no_mangle]
+pub unsafe extern "C" fn wgpuCommandEncoderFromVk(
+    device: native::WGPUDevice,
+    raw_vk_cmd_pool: *const std::ffi::c_void,
+    raw_vk_cmd_buf: *const std::ffi::c_void,
+) -> native::WGPUCommandEncoder {
+    let device = device.as_ref().expect("invalid device");
+    let context = &device.context;
+    let error_sink = &device.error_sink;
+
+    let vk_cmd_pool = vk::CommandPool::from_raw(raw_vk_cmd_pool as _);
+    let vk_cmd_buf = vk::CommandBuffer::from_raw(raw_vk_cmd_buf as _);
+
+    // The Vulkan equivalent to a command encoder is sort of a vkCommandPool.
+    // Normally, in Vulkan, you create a command buffer on your command pool and add commands to that.
+    // In WebGPU, you create a command encoder, begin encoding on it (which creates a Vulkan command buffer behind the scenes), and then it will give it back once you end encoding.
+    // In the WM's case, we receive a command pool AND a command buffer, and so we need to create a command encoder with, as an active command buffer, the Vulkan command buffer. So we never being or end it ourselves.
+
+    let hal_cmd_enc = context.device_as_hal::<hal::api::Vulkan, _, _>(device.id, |hal_dev| {
+        hal_dev
+            .unwrap()
+            .command_encoder_from_raw(vk_cmd_pool, vk_cmd_buf)
+    });
+
+    // Create WebGPU command encoder.
+
+    let id =
+        context.create_command_encoder_from_hal::<hal::api::Vulkan>(hal_cmd_enc, device.id, None);
+
+    // Create native WGPUCommandEncoder.
+
+    Arc::into_raw(Arc::new(WGPUCommandEncoderImpl {
+        context: context.clone(),
+        id,
+        error_sink: error_sink.clone(),
+        open: atomic::AtomicBool::new(true),
     }))
 }
