@@ -4664,15 +4664,14 @@ pub unsafe extern "C" fn wgpuRenderPassEncoderWriteTimestamp(
     }
 }
 
+// Expose the WebGPU Vulkan HAL adapter for a physical device of a Vulkan instance created by someone else.
+// The instance must have been created with Vulkan 1.3 (or 1.0 if that's all the loader supports), like wgpu-hal does itself, as wgpu-hal assumes the device's version is the physical device's.
+// It isn't destroyed when the adapter is dropped.
 #[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
-#[no_mangle]
-pub unsafe extern "C" fn wgpuDeviceFromVk(
-    instance: native::WGPUInstance,
+unsafe fn vk_expose_adapter(
     raw_vk_instance: *const std::ffi::c_void,
     raw_vk_phys_dev: *const std::ffi::c_void,
-    raw_vk_dev: *const std::ffi::c_void,
-    family_index: u32,
-) -> *const WGPUDeviceImpl {
+) -> hal::ExposedAdapter<hal::api::Vulkan> {
     // A lot of inspiration from this:
     // https://github.com/matthewjberger/wgpu-example/blob/main/src/xr.rs
 
@@ -4684,38 +4683,150 @@ pub unsafe extern "C" fn wgpuDeviceFromVk(
         vk::Instance::from_raw(raw_vk_instance as _),
     );
 
+    // Like wgpu-hal does when creating its own instance, pass the loader's version.
+
+    let instance_api_version = match vk_entry.try_enumerate_instance_version() {
+        Ok(Some(version)) => version,
+        _ => vk::API_VERSION_1_0,
+    };
+
     let wgpu_vk_instance = <hal::api::Vulkan as hal::Api>::Instance::from_raw(
-        vk_entry.clone(),
-        vk_instance.clone(),
-        0, // TODO
+        vk_entry,
+        vk_instance,
+        instance_api_version,
         0,
         None,
         vec![],
         wgt::InstanceFlags::default(),
         false,
-        None,
+        Some(Box::new(|| ())), // The instance isn't ours to destroy.
     )
     .unwrap();
 
     // Expose WebGPU Vulkan HAL adapter.
 
     let vk_phys_dev = vk::PhysicalDevice::from_raw(raw_vk_phys_dev as _);
-    let wgpu_exposed_adapter = wgpu_vk_instance.expose_adapter(vk_phys_dev).unwrap();
+    wgpu_vk_instance.expose_adapter(vk_phys_dev).unwrap()
+}
+
+// Device extensions WebGPU needs, given the features we request (all the adapter's).
+// The swapchain extensions are left out, as they depend on VK_KHR_surface, which we don't tell wgpu-hal the instance was created with (so it never uses surfaces anyway).
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+fn vk_required_device_extensions(
+    adapter: &hal::ExposedAdapter<hal::api::Vulkan>,
+) -> Vec<&'static std::ffi::CStr> {
+    adapter
+        .adapter
+        .required_device_extensions(adapter.features)
+        .into_iter()
+        .filter(|ext| {
+            *ext != ash::khr::swapchain::NAME && *ext != ash::khr::swapchain_mutable_format::NAME
+        })
+        .collect()
+}
+
+// Extensions and features WebGPU needs a device to be created with, for wgpuDeviceFromVk.
+// features points to a VkPhysicalDeviceFeatures, and features_next to a chain of feature structs to add to VkDeviceCreateInfo.pNext (which may be modified to enable more features in them).
+#[repr(C)]
+pub struct WGPUVkDeviceRequirements {
+    pub extension_count: usize,
+    pub extensions: *const *const std::ffi::c_char,
+    pub features: *const std::ffi::c_void,
+    pub features_next: *mut std::ffi::c_void,
+    pub internal: *mut std::ffi::c_void,
+}
+
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+struct VkDeviceRequirementsInternal {
+    _extensions: Vec<*const std::ffi::c_char>,
+    _features: Box<dyn std::any::Any>, // The type isn't nameable (wgpu-hal's PhysicalDeviceFeatures isn't re-exported).
+}
+
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+#[no_mangle]
+pub unsafe extern "C" fn wgpuVkGetDeviceRequirements(
+    raw_vk_instance: *const std::ffi::c_void,
+    raw_vk_phys_dev: *const std::ffi::c_void,
+    reqs: *mut WGPUVkDeviceRequirements,
+) {
+    let reqs = reqs.as_mut().expect("invalid requirements");
+
+    let wgpu_exposed_adapter = vk_expose_adapter(raw_vk_instance, raw_vk_phys_dev);
     let wgpu_features = wgpu_exposed_adapter.features;
 
-    let enabled_exts = wgpu_exposed_adapter
-        .adapter
-        .required_device_extensions(wgpu_features);
+    let exts = vk_required_device_extensions(&wgpu_exposed_adapter);
+
+    // The feature structs link to each other through their p_next fields, so they must stay where they are (hence the box).
+
+    let mut features = Box::new(
+        wgpu_exposed_adapter
+            .adapter
+            .physical_device_features(&exts, wgpu_features),
+    );
+
+    let info = features.add_to_device_create(vk::DeviceCreateInfo::default());
+    let features_ptr = info.p_enabled_features as *const std::ffi::c_void;
+    let features_next = info.p_next as *mut std::ffi::c_void;
+
+    let extensions: Vec<*const std::ffi::c_char> = exts.iter().map(|ext| ext.as_ptr()).collect();
+
+    reqs.extension_count = extensions.len();
+    reqs.extensions = extensions.as_ptr();
+    reqs.features = features_ptr;
+    reqs.features_next = features_next;
+    reqs.internal = Box::into_raw(Box::new(VkDeviceRequirementsInternal {
+        _extensions: extensions,
+        _features: features,
+    })) as *mut std::ffi::c_void;
+}
+
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+#[no_mangle]
+pub unsafe extern "C" fn wgpuVkDeviceRequirementsRelease(reqs: *mut WGPUVkDeviceRequirements) {
+    let reqs = reqs.as_mut().expect("invalid requirements");
+
+    if !reqs.internal.is_null() {
+        drop(Box::from_raw(
+            reqs.internal as *mut VkDeviceRequirementsInternal,
+        ));
+    }
+
+    *reqs = WGPUVkDeviceRequirements {
+        extension_count: 0,
+        extensions: std::ptr::null(),
+        features: std::ptr::null(),
+        features_next: std::ptr::null_mut(),
+        internal: std::ptr::null_mut(),
+    };
+}
+
+// The device must have been created with the requirements from wgpuVkGetDeviceRequirements.
+#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+#[no_mangle]
+pub unsafe extern "C" fn wgpuDeviceFromVk(
+    instance: native::WGPUInstance,
+    raw_vk_instance: *const std::ffi::c_void,
+    raw_vk_phys_dev: *const std::ffi::c_void,
+    raw_vk_dev: *const std::ffi::c_void,
+    family_index: u32,
+) -> *const WGPUDeviceImpl {
+    let wgpu_exposed_adapter = vk_expose_adapter(raw_vk_instance, raw_vk_phys_dev);
+    let wgpu_features = wgpu_exposed_adapter.features;
+
+    let enabled_exts = vk_required_device_extensions(&wgpu_exposed_adapter);
 
     // Create WebGPU Vulkan HAL device.
 
-    let vk_dev = ash::Device::load(vk_instance.fp_v1_0(), vk::Device::from_raw(raw_vk_dev as _));
+    let vk_dev = ash::Device::load(
+        wgpu_exposed_adapter.adapter.shared_instance().raw_instance().fp_v1_0(),
+        vk::Device::from_raw(raw_vk_dev as _),
+    );
 
     let wgpu_open_dev = wgpu_exposed_adapter
         .adapter
         .device_from_raw(
             vk_dev,
-            None,
+            Some(Box::new(|| ())), // The device isn't ours to destroy.
             &enabled_exts,
             wgpu_features,
             &wgt::MemoryHints::default(),
