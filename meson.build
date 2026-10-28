@@ -8,13 +8,13 @@ subdir('ffi')
 cargo = find_program('cargo')
 #determine which dir contain platform library
 if ['linux','android','darwin','cygwin','freebsd','netbsd','openbsd'].contains(host_machine.system())
-    lib_path='target/release/libwgpu_native.a'
+    lib_path='target/debug/libwgpu_native.a'
 else
-    lib_path='target/release/wgpu_native.lib'
+    lib_path='target/debug/wgpu_native.lib'
 endif
 
 #build with cargo
-run_command(cargo,'build','--release', check: true)
+run_command(cargo,'build', check: true)
 
 #mark cargo artifact for installation
 install_data(lib_path, install_dir : get_option('libdir'))

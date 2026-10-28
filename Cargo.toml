@@ -20,6 +20,11 @@ members = ["."]
 default-members = ["."]
 resolver = "2"
 
+# [workspace.dependencies.wgpu]
+# package = "wgpu"
+# git = "https://github.com/gfx-rs/wgpu"
+# tag = "v24.0.3"
+
 [workspace.dependencies.wgc]
 package = "wgpu-core"
 git = "https://github.com/gfx-rs/wgpu"
@@ -39,6 +44,13 @@ tag = "v24.0.3"
 package = "naga"
 git = "https://github.com/gfx-rs/wgpu"
 tag = "v24.0.3"
+
+[patch."https://github.com/gfx-rs/wgpu"]
+wgpu = { path = "../../random/wgpu/wgpu" }
+wgpu-core = { path = "../../random/wgpu/wgpu-core" }
+wgpu-types = { path = "../../random/wgpu/wgpu-types" }
+wgpu-hal = { path = "../../random/wgpu/wgpu-hal" }
+naga = { path = "../../random/wgpu/naga" }
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
@@ -158,6 +170,7 @@ bitflags = "2"
 
 # This is required to compile but not sure why because we are not targeting JS
 js-sys = "0.3.77"
+# wgpu.workspace = true
 
 [build-dependencies]
 bindgen = "0.70"
